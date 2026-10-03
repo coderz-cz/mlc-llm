@@ -32,6 +32,12 @@ import android.net.Uri
 import java.io.ByteArrayOutputStream
 import android.util.Base64
 import android.util.Log
+import ai.mlc.mlcchat.data.ChatDatabase
+import ai.mlc.mlcchat.data.ChatMessageDao
+import ai.mlc.mlcchat.data.ChatMessageEntity
+import ai.mlc.mlcchat.data.ChatSessionDao
+import ai.mlc.mlcchat.data.ChatSessionEntity
+import ai.mlc.mlcchat.data.DEFAULT_SESSION_TITLE
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     val modelList = emptyList<ModelState>().toMutableStateList()
@@ -47,6 +53,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val appDirFile = application.getExternalFilesDir("")
     private val gson = Gson()
     private val modelIdSet = emptySet<String>().toMutableSet()
+    private val chatDao: ChatMessageDao = ChatDatabase.getInstance(application).chatMessageDao()
+    private val chatSessionDao: ChatSessionDao = ChatDatabase.getInstance(application).chatSessionDao()
 
     companion object {
         const val AppConfigFilename = "mlc-app-config.json"
@@ -162,6 +170,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         modelList.removeIf { modelState -> modelState.modelConfig.modelId == modelId }
         updateAppConfig {
             appConfig.modelList.removeIf { modelRecord -> modelRecord.modelId == modelId }
+        }
+        thread(start = true) {
+            chatDao.clearForModel(modelId)
+            chatSessionDao.clearSessionsForModel(modelId)
         }
     }
 
@@ -510,6 +522,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val messages = emptyList<MessageData>().toMutableStateList()
         val report = mutableStateOf("")
         val modelName = mutableStateOf("")
+        // The chat "session" (topic/conversation) currently shown. Null only
+        // very briefly before a model has finished its first load.
+        val currentSessionId = mutableStateOf<Long?>(null)
+        // Sessions for modelName.value, newest-first; populated by refreshSessionList().
+        val sessionList = emptyList<ChatSessionEntity>().toMutableStateList()
         private var modelChatState = mutableStateOf(ModelChatState.Ready)
             @Synchronized get
             @Synchronized set
@@ -520,15 +537,140 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         private val executorService = Executors.newSingleThreadExecutor()
         private val viewModelScope = CoroutineScope(Dispatchers.Main + Job())
         private var imageUri: Uri? = null
-        private fun mainResetChat() {
+        // Must be called from a background thread (i.e. already inside an
+        // executorService.submit block) since it hits the DB.
+        private fun createSession(): ChatSessionEntity {
+            val now = System.currentTimeMillis()
+            val id = chatSessionDao.insert(
+                ChatSessionEntity(
+                    modelId = modelName.value,
+                    title = DEFAULT_SESSION_TITLE,
+                    createdAt = now,
+                    lastUpdatedAt = now
+                )
+            )
+            return ChatSessionEntity(id, modelName.value, DEFAULT_SESSION_TITLE, now, now)
+        }
+
+        // Must be called from a background thread. Pushes the refreshed list
+        // to the UI-facing sessionList.
+        private fun queryAndPublishSessionList() {
+            val sessions = chatSessionDao.getSessionsForModel(modelName.value)
+            viewModelScope.launch {
+                sessionList.clear()
+                sessionList.addAll(sessions)
+            }
+        }
+
+        fun refreshSessionList() {
+            executorService.submit { queryAndPublishSessionList() }
+        }
+
+        /** Starts a brand-new, empty chat for the current model (kept, not deleted). */
+        fun requestNewChat() {
+            require(interruptable())
+            interruptChat(
+                prologue = { switchToResetting() },
+                epilogue = { mainNewChat() }
+            )
+        }
+
+        private fun mainNewChat() {
             imageUri = null
             executorService.submit {
                 callBackend { engine.reset() }
                 historyMessages = mutableListOf<ChatCompletionMessage>()
+                val session = createSession()
+                currentSessionId.value = session.id
+                queryAndPublishSessionList()
                 viewModelScope.launch {
                     clearHistory()
                     switchToReady()
                 }
+            }
+        }
+
+        /** Deletes the chat currently being viewed, then opens a fresh empty one. */
+        fun requestDeleteCurrentChat() {
+            require(interruptable())
+            val sessionToDelete = currentSessionId.value
+            interruptChat(
+                prologue = { switchToResetting() },
+                epilogue = { mainDeleteCurrentChat(sessionToDelete) }
+            )
+        }
+
+        private fun mainDeleteCurrentChat(sessionId: Long?) {
+            imageUri = null
+            executorService.submit {
+                callBackend { engine.reset() }
+                historyMessages = mutableListOf<ChatCompletionMessage>()
+                if (sessionId != null) {
+                    chatDao.clearForSession(sessionId)
+                    chatSessionDao.deleteSession(sessionId)
+                }
+                val session = createSession()
+                currentSessionId.value = session.id
+                queryAndPublishSessionList()
+                viewModelScope.launch {
+                    clearHistory()
+                    switchToReady()
+                }
+            }
+        }
+
+        /** Switches to a different, already-existing chat/topic. */
+        fun requestSwitchSession(sessionId: Long) {
+            if (currentSessionId.value == sessionId) return
+            require(interruptable())
+            interruptChat(
+                prologue = { switchToResetting() },
+                epilogue = { mainSwitchSession(sessionId) }
+            )
+        }
+
+        private fun mainSwitchSession(sessionId: Long) {
+            imageUri = null
+            executorService.submit {
+                callBackend { engine.reset() }
+                val savedMessages = chatDao.getMessagesForSession(sessionId)
+                val newHistory = savedMessages.map { saved ->
+                    ChatCompletionMessage(
+                        role = if (saved.role == MessageRole.User.name)
+                            OpenAIProtocol.ChatCompletionRole.user
+                        else OpenAIProtocol.ChatCompletionRole.assistant,
+                        content = saved.text
+                    )
+                }.toMutableList()
+                currentSessionId.value = sessionId
+                viewModelScope.launch {
+                    messages.clear()
+                    report.value = ""
+                    historyMessages = newHistory
+                    for (saved in savedMessages) {
+                        val role = if (saved.role == MessageRole.User.name)
+                            MessageRole.User else MessageRole.Assistant
+                        messages.add(MessageData(role, saved.text))
+                    }
+                    switchToReady()
+                }
+            }
+        }
+
+        /**
+         * Deletes an arbitrary chat from the session list (e.g. one that
+         * isn't currently open). Deleting the currently-open one falls back
+         * to [requestDeleteCurrentChat] so a chat is always showing.
+         */
+        fun requestDeleteSession(sessionId: Long) {
+            if (sessionId == currentSessionId.value) {
+                requestDeleteCurrentChat()
+                return
+            }
+            executorService.submit {
+                chatDao.clearForSession(sessionId)
+                chatSessionDao.deleteSession(sessionId)
+                queryAndPublishSessionList()
             }
         }
 
@@ -575,18 +717,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 return false
             }
             return true
-        }
-
-        fun requestResetChat() {
-            require(interruptable())
-            interruptChat(
-                prologue = {
-                    switchToResetting()
-                },
-                epilogue = {
-                    mainResetChat()
-                }
-            )
         }
 
         private fun interruptChat(prologue: () -> Unit, epilogue: () -> Unit) {
@@ -663,7 +793,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         engine.unload()
                         engine.reload(modelPath, modelConfig.modelLib)
                     }) return@submit
+                // Resume the most recently used chat for this model, creating
+                // a first one if it has never been opened before.
+                val existingSessions = chatSessionDao.getSessionsForModel(modelConfig.modelId)
+                val session = existingSessions.firstOrNull() ?: createSession()
+                currentSessionId.value = session.id
+                val savedMessages = chatDao.getMessagesForSession(session.id)
                 viewModelScope.launch {
+                    for (saved in savedMessages) {
+                        val role = if (saved.role == MessageRole.User.name)
+                            MessageRole.User else MessageRole.Assistant
+                        messages.add(MessageData(role, saved.text))
+                    }
+                    historyMessages = savedMessages.map { saved ->
+                        ChatCompletionMessage(
+                            role = if (saved.role == MessageRole.User.name)
+                                OpenAIProtocol.ChatCompletionRole.user
+                            else OpenAIProtocol.ChatCompletionRole.assistant,
+                            content = saved.text
+                        )
+                    }.toMutableList()
                     Toast.makeText(application, "Ready to chat", Toast.LENGTH_SHORT).show()
                     switchToReady()
                 }
@@ -699,6 +848,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             require(chatable())
             switchToGenerating()
             appendMessage(MessageRole.User, prompt)
+            persistMessage(MessageRole.User, prompt)
             appendMessage(MessageRole.Assistant, "")
             var content = ChatCompletionMessageContent(text=prompt)
             if (imageUri != null) {
@@ -760,6 +910,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             role = OpenAIProtocol.ChatCompletionRole.assistant,
                             content = streamingText
                         ))
+                        persistMessage(MessageRole.Assistant, streamingText)
                         streamingText = ""
                     } else {
                         if (historyMessages.isNotEmpty()) {
@@ -774,6 +925,36 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         private fun appendMessage(role: MessageRole, text: String) {
             messages.add(MessageData(role, text))
+        }
+
+        // Persists a completed message (not called for the empty placeholder
+        // appended before streaming starts, nor for each streaming delta —
+        // only once a message's final text is known) off the main thread.
+        private fun persistMessage(role: MessageRole, text: String) {
+            val forModelId = modelName.value
+            val forSessionId = currentSessionId.value ?: return
+            executorService.submit {
+                val nextIndex = chatDao.getMaxOrderIndex(forSessionId) + 1
+                chatDao.insert(
+                    ChatMessageEntity(
+                        sessionId = forSessionId,
+                        modelId = forModelId,
+                        role = role.name,
+                        text = text,
+                        orderIndex = nextIndex
+                    )
+                )
+                val now = System.currentTimeMillis()
+                chatSessionDao.touchSession(forSessionId, now)
+                if (role == MessageRole.User) {
+                    // Only takes effect once: the query only matches while
+                    // the session still has the default placeholder title.
+                    val title = text.trim().let { if (it.length > 40) it.take(40) + "…" else it }
+                    if (title.isNotEmpty()) {
+                        chatSessionDao.setInitialTitleIfDefault(forSessionId, title)
+                    }
+                }
+            }
         }
 
 

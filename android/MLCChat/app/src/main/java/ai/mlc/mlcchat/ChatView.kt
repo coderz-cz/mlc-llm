@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentHeight
@@ -23,12 +24,19 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddAPhoto
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Photo
-import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -38,6 +46,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -52,6 +61,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -66,6 +76,13 @@ fun ChatView(
 ) {
     val localFocusManager = LocalFocusManager.current
     (activity as MainActivity).chatState = chatState
+    var showSessionList by rememberSaveable { mutableStateOf(false) }
+    if (showSessionList) {
+        ChatSessionListDialog(
+            chatState = chatState,
+            onDismiss = { showSessionList = false }
+        )
+    }
     Scaffold(topBar = {
         TopAppBar(
             title = {
@@ -90,13 +107,26 @@ fun ChatView(
             actions = {
                 IconButton(
                     onClick = {
-                        chatState.requestResetChat()
+                        chatState.refreshSessionList()
+                        showSessionList = true
+                    },
+                    enabled = chatState.interruptable()
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Chat,
+                        contentDescription = "chat list",
+                        tint = MaterialTheme.colorScheme.onPrimary
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        chatState.requestDeleteCurrentChat()
                         activity.hasImage = false },
                     enabled = chatState.interruptable()
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.Replay,
-                        contentDescription = "reset the chat",
+                        imageVector = Icons.Filled.DeleteForever,
+                        contentDescription = "delete current chat",
                         tint = MaterialTheme.colorScheme.onPrimary
                     )
                 }
@@ -145,6 +175,83 @@ fun ChatView(
             SendMessageView(chatState = chatState, activity)
         }
     }
+}
+
+@Composable
+fun ChatSessionListDialog(chatState: AppViewModel.ChatState, onDismiss: () -> Unit) {
+    val dateFormat = remember {
+        java.text.SimpleDateFormat("dd/MM HH:mm", java.util.Locale.getDefault())
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Chats") },
+        text = {
+            Column {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp)
+                        .pointerInput(Unit) {
+                            detectTapGestures(onTap = {
+                                chatState.requestNewChat()
+                                onDismiss()
+                            })
+                        }
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = "new chat",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("New Chat", color = MaterialTheme.colorScheme.primary)
+                }
+                Divider()
+                LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
+                    items(
+                        items = chatState.sessionList,
+                        key = { session -> session.id }
+                    ) { session ->
+                        val isCurrent = session.id == chatState.currentSessionId.value
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp)
+                                .pointerInput(session.id) {
+                                    detectTapGestures(onTap = {
+                                        chatState.requestSwitchSession(session.id)
+                                        onDismiss()
+                                    })
+                                }
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = session.title,
+                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
+                                )
+                                Text(
+                                    text = dateFormat.format(java.util.Date(session.lastUpdatedAt)),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            IconButton(onClick = { chatState.requestDeleteSession(session.id) }) {
+                                Icon(
+                                    imageVector = Icons.Filled.Delete,
+                                    contentDescription = "delete this chat"
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        }
+    )
 }
 
 @Composable
