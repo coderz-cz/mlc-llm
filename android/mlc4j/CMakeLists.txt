@@ -84,6 +84,14 @@ target_link_libraries(
 target_compile_definitions(tvm4j_runtime_packed PUBLIC TVM4J_ANDROID)
 add_dependencies(tvm4j_runtime_packed tvm4j_core)
 
+# Android now requires native libraries to be aligned to 16 KB page
+# boundaries (newer devices/OS use a 16 KB page size instead of 4 KB).
+# The NDK toolchain file does not enable this by default here, so set it
+# explicitly on the linker.
+target_link_options(tvm4j_runtime_packed PRIVATE
+  "-Wl,-z,max-page-size=16384"
+  "-Wl,-z,common-page-size=16384")
+
 target_compile_definitions(mlc_llm_objs PUBLIC MLC_SINGLE_GPU_ONLY)
 
 install_jar(tvm4j_core output)

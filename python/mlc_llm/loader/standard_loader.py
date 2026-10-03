@@ -98,7 +98,11 @@ def make_standard_hf_loader(
                             lambda q, k, v, dtype: np.concatenate(
                                 [q, k, v], axis=qkv_concat_axis
                             ).astype(dtype),
-                            dtype=mlc_param.dtype,
+                            # NOTE: mlc_param.dtype is a TVM-side typed dtype object (e.g. `T.float16`)
+                # in this tvm build, which numpy 2.x's astype() no longer accepts via
+                # duck-typed `.dtype` coercion. Convert to its plain string form
+                # ("float16" etc.) first, which numpy always accepts.
+                dtype=str(mlc_param.dtype),
                         ),
                     )
 
@@ -113,7 +117,11 @@ def make_standard_hf_loader(
                                     lambda q, k, v, dtype: np.concatenate(
                                         [q, k, v], axis=qkv_concat_axis
                                     ).astype(dtype),
-                                    dtype=mlc_param.dtype,
+                                    # NOTE: mlc_param.dtype is a TVM-side typed dtype object (e.g. `T.float16`)
+                # in this tvm build, which numpy 2.x's astype() no longer accepts via
+                # duck-typed `.dtype` coercion. Convert to its plain string form
+                # ("float16" etc.) first, which numpy always accepts.
+                dtype=str(mlc_param.dtype),
                                 ),
                             )
 
@@ -129,7 +137,11 @@ def make_standard_hf_loader(
                                 lambda gate, up, dtype: np.concatenate(
                                     [gate, up], axis=gate_up_concat_axis
                                 ).astype(dtype),
-                                dtype=mlc_param.dtype,
+                                # NOTE: mlc_param.dtype is a TVM-side typed dtype object (e.g. `T.float16`)
+                # in this tvm build, which numpy 2.x's astype() no longer accepts via
+                # duck-typed `.dtype` coercion. Convert to its plain string form
+                # ("float16" etc.) first, which numpy always accepts.
+                dtype=str(mlc_param.dtype),
                             ),
                         )
 
@@ -143,7 +155,11 @@ def make_standard_hf_loader(
                     [name_transform_fn(mlc_name)],
                     functools.partial(
                         lambda x, dtype: x.astype(dtype),
-                        dtype=mlc_param.dtype,
+                        # NOTE: mlc_param.dtype is a TVM-side typed dtype object (e.g. `T.float16`)
+                # in this tvm build, which numpy 2.x's astype() no longer accepts via
+                # duck-typed `.dtype` coercion. Convert to its plain string form
+                # ("float16" etc.) first, which numpy always accepts.
+                dtype=str(mlc_param.dtype),
                     ),
                 )
 

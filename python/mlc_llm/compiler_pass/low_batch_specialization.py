@@ -34,7 +34,7 @@ class LowBatchGemvSpecialize:
                     for low_batch_func in low_batch_funcs
                 ):
                     continue
-                buffers = [param for param in func.params if tirx.is_buffer_var(param)]
+                buffers = func.buffer_map.values()
                 shapes = [buffer.shape for buffer in buffers]
                 symbolic_vars = set(
                     expr for shape in shapes for expr in shape if isinstance(expr, tirx.Var)

@@ -6,6 +6,7 @@
 
 #include <ffi/backtrace.cc>
 #include <ffi/container.cc>
+#include <ffi/custom_allocator.cc>
 #include <ffi/dtype.cc>
 #include <ffi/error.cc>
 #include <ffi/extra/env_c_api.cc>
@@ -17,6 +18,7 @@
 #include <ffi/extra/library_module_system_lib.cc>
 #include <ffi/extra/module.cc>
 #include <ffi/function.cc>
+#include <ffi/init_once.cc>
 #include <ffi/object.cc>
 #include <runtime/cpu_device_api.cc>
 #include <runtime/device_api.cc>
@@ -24,12 +26,17 @@
 #include <runtime/logging.cc>
 #include <runtime/memory/memory_manager.cc>
 #include <runtime/module.cc>
-#include <runtime/nvtx.cc>
-#include <runtime/opencl/opencl_device_api.cc>
-#include <runtime/opencl/opencl_module.cc>
-#include <runtime/opencl/opencl_wrapper/opencl_wrapper.cc>
-#include <runtime/profiling.cc>
-#include <runtime/source_utils.cc>
+// NOTE: runtime/nvtx.cc no longer exists in this tvm commit; nvtx.h was made
+// header-only and relocated to tvm/support/cuda (irrelevant without CUDA).
+// NOTE: src/runtime/opencl/ was relocated to src/backend/opencl/runtime/.
+#include <backend/opencl/runtime/opencl_device_api.cc>
+#include <backend/opencl/runtime/opencl_module.cc>
+#include <backend/opencl/runtime/opencl_wrapper/opencl_wrapper.cc>
+// NOTE: runtime/profiling.cc was renamed to runtime/timer.cc.
+#include <runtime/timer.cc>
+// NOTE: runtime/source_utils.cc no longer exists; it became
+// backend/opencl/runtime/source_utils.h, already included by
+// opencl_device_api.cc above.
 #include <runtime/tensor.cc>
 #include <runtime/thread_pool.cc>
 #include <runtime/threading_backend.cc>
@@ -53,7 +60,12 @@ namespace detail {
 [[noreturn]] void LogFatalImpl(const std::string& file, int lineno, const std::string& message) {
   std::string m = file + ":" + std::to_string(lineno) + ": " + message;
   __android_log_write(ANDROID_LOG_FATAL, "TVM_RUNTIME", m.c_str());
-  throw InternalError(file, lineno, message);
+  // NOTE: tvm::runtime::InternalError no longer exists; fatal errors are now
+  // represented as a tvm::ffi::Error of kind "InternalError" (see
+  // tvm/runtime/logging.h LogMessage::Entry::Finalize for the equivalent
+  // upstream pattern this mirrors).
+  throw ::tvm::ffi::Error("InternalError", message,
+                           ::TVMFFIBacktrace(file.c_str(), lineno, "", 0));
 }
 void LogMessageImpl(const std::string& file, int lineno, int level, const std::string& message) {
   std::string m = file + ":" + std::to_string(lineno) + ": " + message;

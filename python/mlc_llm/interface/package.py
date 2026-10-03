@@ -18,6 +18,18 @@ logger = logging.getLogger(__name__)
 SUPPORTED_DEVICES = ["iphone", "macabi", "android"]
 
 
+def _rmtree(path) -> None:  # noqa: ANN001
+    """shutil.rmtree that also works on Windows for read-only files (e.g. git
+    object files copied from a HuggingFace cache clone), which otherwise fail
+    with PermissionError [WinError 5]."""
+
+    def _on_error(func, target_path, exc_info):  # noqa: ANN001
+        os.chmod(target_path, 0o777)
+        func(target_path)
+
+    shutil.rmtree(path, onerror=_on_error)
+
+
 def build_model_library(
     package_config: Dict[str, Any],  # noqa: UP006
     device: str,
@@ -31,7 +43,7 @@ def build_model_library(
     logger.info('Clean up all directories under "%s"', str(bundle_dir))
     for content_path in bundle_dir.iterdir():
         if content_path.is_dir():
-            shutil.rmtree(content_path)
+            _rmtree(content_path)
 
     # - Process each model, and prepare the app config.
     app_config_model_list = []
@@ -135,7 +147,7 @@ def build_model_library(
                 style.bold(str(bundle_model_weight_path)),
             )
             if bundle_model_weight_path.exists():
-                shutil.rmtree(bundle_model_weight_path)
+                _rmtree(bundle_model_weight_path)
             shutil.copytree(model_path, bundle_model_weight_path)
         if bundle_weight and device in ["iphone", "macabi"]:
             app_config_model_entry["model_path"] = model_id
@@ -282,7 +294,7 @@ def build_android_binding(mlc_llm_source_dir: Path, output: Path) -> None:
     logger.info('Clean up all directories under "%s"', str(lib_path))
     for content_path in lib_path.iterdir():
         if content_path.is_dir():
-            shutil.rmtree(content_path)
+            _rmtree(content_path)
 
     src_path = str(mlc4j_path / "src")
     dst_path = str(lib_path / "src")

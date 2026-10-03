@@ -96,19 +96,22 @@ def remove_global_buf_alloc(
     """Remove the global buffer allocation for a given TIR PrimFunc."""
     assert isinstance(func.body, tirx.SBlockRealize)
     params = list(func.params)
+    buffer_map = dict(func.buffer_map)
     tensor_sinfo = []
     alloc_buffers = []
 
     insertion_point = len(params)
-    while not tirx.is_buffer_var(params[insertion_point - 1]):
+    while not isinstance(params[insertion_point - 1].ty, tvm.ir.PointerType):
         insertion_point -= 1
         assert insertion_point >= 1
 
     prev_root_block = func.body.block
     for buf_alloc in func.body.block.alloc_buffers:
         if buf_alloc.scope() == "global":
-            params.insert(insertion_point, buf_alloc)
+            param = tirx.Var("var_" + buf_alloc.name, "handle")
+            params.insert(insertion_point, param)
             insertion_point += 1
+            buffer_map[param] = buf_alloc
             tensor_sinfo.append(relax.TensorType(buf_alloc.shape, buf_alloc.dtype))
         else:
             alloc_buffers.append(buf_alloc)
@@ -136,6 +139,7 @@ def remove_global_buf_alloc(
         params=params,
         body=tirx.SBlockRealize(iter_values=[], predicate=True, block=root_block),
         ret_type=func.ret_type,
+        buffer_map=buffer_map,
         attrs=func.attrs,
     )
     return updated_func, tensor_sinfo
@@ -159,7 +163,7 @@ def _resolve_tir_var_mapping(
 
     n_arg = len(call.args[1].fields)
     for i in range(n_arg):
-        buffer_shape = func.params[i].shape
+        buffer_shape = func.buffer_map[func.params[i]].shape
         arg_shape = call.args[1][i].ty.shape.values
         assert len(buffer_shape) == len(arg_shape)
         for v_l, v_r in zip(buffer_shape, arg_shape):
@@ -173,7 +177,7 @@ def _resolve_tir_var_mapping(
         [ret_tensors] if isinstance(ret_tensors, relax.TensorType) else list(ret_tensors.fields)
     )
     for i, ret_tensor in enumerate(ret_tensors):
-        buffer_shape = func.params[n_arg + i].shape
+        buffer_shape = func.buffer_map[func.params[n_arg + i]].shape
         ret_tensor_shape = ret_tensor.shape.values
         assert len(buffer_shape) == len(ret_tensor_shape)
         for v_l, v_r in zip(buffer_shape, ret_tensor_shape):
