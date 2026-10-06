@@ -38,6 +38,8 @@ import ai.mlc.mlcchat.data.ChatMessageEntity
 import ai.mlc.mlcchat.data.ChatSessionDao
 import ai.mlc.mlcchat.data.ChatSessionEntity
 import ai.mlc.mlcchat.data.DEFAULT_SESSION_TITLE
+import ai.mlc.mlcchat.tools.ShellToolProtocol
+import ai.mlc.mlcchat.tools.TermuxShell
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     val modelList = emptyList<ModelState>().toMutableStateList()
@@ -537,6 +539,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         private val executorService = Executors.newSingleThreadExecutor()
         private val viewModelScope = CoroutineScope(Dispatchers.Main + Job())
         private var imageUri: Uri? = null
+
+        // --- Shell tools (Termux bridge) ---
+        // User-facing toggle: when on, the model may request shell commands
+        // via the ShellToolProtocol exec-block convention.
+        val shellToolsEnabled = mutableStateOf(false)
+        // When non-null, a command the model proposed is waiting for the user
+        // to approve or decline (drives the confirmation dialog in ChatView).
+        val pendingCommand = mutableStateOf<String?>(null)
+        // The tool-loop step index of the pending command, so a continuation
+        // keeps counting toward ShellToolProtocol.MAX_STEPS.
+        private var pendingStepCount = 0
+
         // Must be called from a background thread (i.e. already inside an
         // executorService.submit block) since it hits the DB.
         private fun createSession(): ChatSessionEntity {
@@ -869,57 +883,154 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             executorService.submit {
+                ensureSystemPrompt()
                 historyMessages.add(ChatCompletionMessage(
                     role = OpenAIProtocol.ChatCompletionRole.user,
                     content = content
                 ))
-
                 viewModelScope.launch {
-                    val responses = engine.chat.completions.create(
-                        messages = historyMessages,
-                        stream_options = OpenAIProtocol.StreamOptions(include_usage = true)
-                    )
+                    streamAssistant(stepCount = 0)
+                }
+            }
+        }
 
-                    var finishReasonLength = false
-                    var streamingText = ""
+        /**
+         * Runs one assistant completion against [historyMessages] (whose last
+         * entry must be the triggering user/tool message), streams it into the
+         * trailing Assistant placeholder bubble, persists it, then hands off to
+         * [onAssistantComplete] which decides whether a shell tool step
+         * follows. [stepCount] counts shell tool iterations for this turn.
+         *
+         * The Assistant placeholder bubble is expected to already be appended
+         * before this is called.
+         */
+        private suspend fun streamAssistant(stepCount: Int) {
+            val responses = engine.chat.completions.create(
+                messages = historyMessages,
+                stream_options = OpenAIProtocol.StreamOptions(include_usage = true)
+            )
 
-                    for (res in responses) {
-                        if (!callBackend {
-                            for (choice in res.choices) {
-                                choice.delta.content?.let { content ->
-                                    streamingText += content.asText()
-                                }
-                                choice.finish_reason?.let { finishReason ->
-                                    if (finishReason == "length") {
-                                        finishReasonLength = true
-                                    }
-                                }
+            var finishReasonLength = false
+            var streamingText = ""
+
+            for (res in responses) {
+                if (!callBackend {
+                    for (choice in res.choices) {
+                        choice.delta.content?.let { content ->
+                            streamingText += content.asText()
+                        }
+                        choice.finish_reason?.let { finishReason ->
+                            if (finishReason == "length") {
+                                finishReasonLength = true
                             }
-                            updateMessage(MessageRole.Assistant, streamingText)
-                            res.usage?.let { finalUsage ->
-                                report.value = finalUsage.extra?.asTextLabel() ?: ""
-                            }
-                            if (finishReasonLength) {
-                                streamingText += " [output truncated due to context length limit...]"
-                                updateMessage(MessageRole.Assistant, streamingText)
-                            }
-                        });
-                    }
-                    if (streamingText.isNotEmpty()) {
-                        historyMessages.add(ChatCompletionMessage(
-                            role = OpenAIProtocol.ChatCompletionRole.assistant,
-                            content = streamingText
-                        ))
-                        persistMessage(MessageRole.Assistant, streamingText)
-                        streamingText = ""
-                    } else {
-                        if (historyMessages.isNotEmpty()) {
-                            historyMessages.removeAt(historyMessages.size - 1)
                         }
                     }
-
-                    if (modelChatState.value == ModelChatState.Generating) switchToReady()
+                    updateMessage(MessageRole.Assistant, streamingText)
+                    res.usage?.let { finalUsage ->
+                        report.value = finalUsage.extra?.asTextLabel() ?: ""
+                    }
+                    if (finishReasonLength) {
+                        streamingText += " [output truncated due to context length limit...]"
+                        updateMessage(MessageRole.Assistant, streamingText)
+                    }
+                });
+            }
+            if (streamingText.isNotEmpty()) {
+                historyMessages.add(ChatCompletionMessage(
+                    role = OpenAIProtocol.ChatCompletionRole.assistant,
+                    content = streamingText
+                ))
+                persistMessage(MessageRole.Assistant, streamingText)
+            } else {
+                if (historyMessages.isNotEmpty()) {
+                    historyMessages.removeAt(historyMessages.size - 1)
                 }
+            }
+
+            onAssistantComplete(streamingText, stepCount)
+        }
+
+        /**
+         * After a completed assistant message: if shell tools are on and the
+         * reply contains an exec block (and we're under the step limit),
+         * surface the proposed command for user approval (leaving the chat in
+         * the Generating state so input stays locked). Otherwise finish the
+         * turn.
+         */
+        private fun onAssistantComplete(assistantText: String, stepCount: Int) {
+            if (modelChatState.value != ModelChatState.Generating) return
+
+            if (shellToolsEnabled.value && assistantText.isNotEmpty()) {
+                val command = ShellToolProtocol.extractCommand(assistantText)
+                if (command != null) {
+                    if (stepCount >= ShellToolProtocol.MAX_STEPS) {
+                        appendMessage(
+                            MessageRole.Assistant,
+                            "[tool step limit of ${ShellToolProtocol.MAX_STEPS} reached — " +
+                                "not running further commands this turn]"
+                        )
+                        switchToReady()
+                        return
+                    }
+                    // Park the command for the confirmation dialog. Stay in
+                    // Generating so the composer stays disabled until the user
+                    // approves or declines.
+                    pendingStepCount = stepCount
+                    pendingCommand.value = command
+                    return
+                }
+            }
+            switchToReady()
+        }
+
+        /** User approved the parked command: run it in Termux and continue. */
+        fun approvePendingCommand() {
+            val command = pendingCommand.value ?: return
+            pendingCommand.value = null
+            val step = pendingStepCount
+            viewModelScope.launch {
+                val result = TermuxShell.run(application, command)
+                val feedback = ShellToolProtocol.formatResultForModel(result)
+                appendMessage(MessageRole.User, feedback)
+                persistMessage(MessageRole.User, feedback)
+                appendMessage(MessageRole.Assistant, "")
+                historyMessages.add(
+                    ChatCompletionMessage(
+                        role = OpenAIProtocol.ChatCompletionRole.user,
+                        content = feedback
+                    )
+                )
+                streamAssistant(stepCount = step + 1)
+            }
+        }
+
+        /** User declined the parked command: note it and end the turn. */
+        fun declinePendingCommand() {
+            if (pendingCommand.value == null) return
+            pendingCommand.value = null
+            appendMessage(
+                MessageRole.Assistant,
+                "[command declined by user — not run]"
+            )
+            if (modelChatState.value == ModelChatState.Generating) switchToReady()
+        }
+
+        /**
+         * Keeps [historyMessages] front-loaded with the shell-tools system
+         * prompt while the toggle is on. Only inserts once; reloading a model
+         * clears history, so there's no stale-prompt buildup.
+         */
+        private fun ensureSystemPrompt() {
+            val hasSystem = historyMessages.firstOrNull()?.role ==
+                OpenAIProtocol.ChatCompletionRole.system
+            if (shellToolsEnabled.value && !hasSystem) {
+                historyMessages.add(
+                    0,
+                    ChatCompletionMessage(
+                        role = OpenAIProtocol.ChatCompletionRole.system,
+                        content = ShellToolProtocol.SYSTEM_PROMPT
+                    )
+                )
             }
         }
 

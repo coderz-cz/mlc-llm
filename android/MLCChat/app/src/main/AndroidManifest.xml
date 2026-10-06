@@ -10,6 +10,17 @@
         android:maxSdkVersion="32"
         tools:ignore="ScopedStorage" />
 
+    <!-- Lets us drive Termux's RunCommandService to execute shell commands.
+         Requires `allow-external-apps = true` in ~/.termux/termux.properties
+         on the device. -->
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+
+    <!-- Android 11+ package visibility: without this, the Termux package is
+         invisible to getPackageInfo() / explicit service intents. -->
+    <queries>
+        <package android:name="com.termux" />
+    </queries>
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"

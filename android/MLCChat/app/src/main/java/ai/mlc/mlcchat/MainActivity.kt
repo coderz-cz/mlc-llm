@@ -24,6 +24,11 @@ import java.util.Locale
 import java.util.UUID
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        // Termux's public permission for driving its RunCommandService.
+        private const val TERMUX_RUN_COMMAND_PERMISSION = "com.termux.permission.RUN_COMMAND"
+    }
+
     var hasImage = false
 
     private val pickImageLauncher = registerForActivityResult(
@@ -127,6 +132,18 @@ class MainActivity : ComponentActivity() {
             ) {
                 permissionsToRequest.add(Manifest.permission.CAMERA)
             }
+        }
+
+        // Termux shell-tools bridge: com.termux.permission.RUN_COMMAND is a
+        // custom dangerous permission, so it is NOT auto-granted at install and
+        // does not reliably appear in Settings. Request it at runtime so a
+        // fresh install prompts the user instead of needing an adb grant.
+        if (ContextCompat.checkSelfPermission(
+                this,
+                TERMUX_RUN_COMMAND_PERMISSION
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            permissionsToRequest.add(TERMUX_RUN_COMMAND_PERMISSION)
         }
 
         if (permissionsToRequest.isNotEmpty()) {

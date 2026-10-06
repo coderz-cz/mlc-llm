@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -83,6 +84,13 @@ fun ChatView(
             onDismiss = { showSessionList = false }
         )
     }
+    chatState.pendingCommand.value?.let { command ->
+        ShellCommandConfirmDialog(
+            command = command,
+            onApprove = { chatState.approvePendingCommand() },
+            onDecline = { chatState.declinePendingCommand() }
+        )
+    }
     Scaffold(topBar = {
         TopAppBar(
             title = {
@@ -105,6 +113,23 @@ fun ChatView(
                 }
             },
             actions = {
+                val shellOn = chatState.shellToolsEnabled.value
+                IconButton(
+                    onClick = {
+                        chatState.shellToolsEnabled.value = !shellOn
+                    },
+                    enabled = chatState.interruptable()
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Terminal,
+                        contentDescription = if (shellOn)
+                            "shell tools on" else "shell tools off",
+                        tint = if (shellOn)
+                            MaterialTheme.colorScheme.onPrimary
+                        else
+                            MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.4f)
+                    )
+                }
                 IconButton(
                     onClick = {
                         chatState.refreshSessionList()
@@ -250,6 +275,41 @@ fun ChatSessionListDialog(chatState: AppViewModel.ChatState, onDismiss: () -> Un
         },
         confirmButton = {
             TextButton(onClick = onDismiss) { Text("Close") }
+        }
+    )
+}
+
+@Composable
+fun ShellCommandConfirmDialog(
+    command: String,
+    onApprove: () -> Unit,
+    onDecline: () -> Unit
+) {
+    AlertDialog(
+        // Deliberately require an explicit choice: tapping outside declines
+        // rather than silently running a real device command.
+        onDismissRequest = onDecline,
+        title = { Text("Run this command in Termux?") },
+        text = {
+            SelectionContainer {
+                Text(
+                    text = command,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(5.dp)
+                        )
+                        .padding(10.dp)
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onApprove) { Text("Run") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDecline) { Text("Decline") }
         }
     )
 }
