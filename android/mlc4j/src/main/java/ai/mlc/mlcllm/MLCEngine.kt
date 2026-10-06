@@ -71,6 +71,15 @@ class MLCEngine {
     fun unload() {
         jsonFFIEngine.unload()
     }
+
+    /**
+     * Aborts all in-flight chat completions. The engine finalizes each
+     * request and closes its stream channel, so any active streaming loop
+     * ends promptly with whatever text was produced so far.
+     */
+    fun abort() {
+        state.abortAll(jsonFFIEngine)
+    }
 }
 
 data class RequestState(
@@ -97,6 +106,22 @@ class EngineState {
         jsonFFIEngine.chatCompletion(jsonRequest, requestID)
 
         return channel
+    }
+
+    /**
+     * Aborts every tracked request by id. The engine's final callback will
+     * close and remove each channel, so we only trigger the abort here
+     * (snapshotting the ids to avoid concurrent-modification).
+     */
+    fun abortAll(jsonFFIEngine: JSONFFIEngine) {
+        val ids = requestStateMap.keys.toList()
+        for (id in ids) {
+            try {
+                jsonFFIEngine.abort(id)
+            } catch (e: Exception) {
+                logger.severe("Failed to abort request $id: $e")
+            }
+        }
     }
 
     fun streamCallback(result: String?) {

@@ -60,6 +60,10 @@ public class JSONFFIEngine {
         chatCompletionFunc.pushArg(requestJSONStr).pushArg(requestId).invoke();
     }
 
+    public void abort(String requestId) {
+        abortFunc.pushArg(requestId).invoke();
+    }
+
     public void runBackgroundLoop() {
         runBackgroundLoopFunc.invoke();
     }

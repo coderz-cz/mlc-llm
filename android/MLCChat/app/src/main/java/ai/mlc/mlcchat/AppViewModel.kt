@@ -22,6 +22,7 @@ import java.nio.channels.Channels
 import java.util.UUID
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
+import kotlinx.coroutines.channels.ReceiveChannel
 import ai.mlc.mlcllm.OpenAIProtocol.ChatCompletionMessage
 import ai.mlc.mlcllm.OpenAIProtocol.ChatCompletionMessageContent
 import android.app.Activity
@@ -535,6 +536,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             @Synchronized get
             @Synchronized set
         private val engine = MLCEngine()
+        // Set when the user asks to stop generation; the streaming loop checks
+        // it and ends early, keeping whatever text was produced so far.
+        @Volatile
+        private var stopRequested = false
+        // The channel of the in-flight completion, kept so a stop request can
+        // cancel it directly (unblocking the streaming loop even if the engine
+        // never delivers a terminating chunk after abort()).
+        private var currentResponses: ReceiveChannel<OpenAIProtocol.ChatCompletionStreamResponse>? = null
         private var historyMessages = mutableListOf<ChatCompletionMessage>()
         private var modelLib = ""
         private var modelPath = ""
@@ -889,6 +898,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         fun requestGenerate(prompt: String, activity: Activity) {
             require(chatable())
+            stopRequested = false
             switchToGenerating()
             appendMessage(MessageRole.User, prompt)
             persistMessage(MessageRole.User, prompt)
@@ -934,15 +944,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
          * before this is called.
          */
         private suspend fun streamAssistant(stepCount: Int) {
+            // Stop may have been requested before this round even started
+            // (e.g. during a tool command). Bail out cleanly.
+            if (stopRequested) {
+                finalizeStopped("")
+                return
+            }
             val responses = engine.chat.completions.create(
                 messages = historyMessages,
                 stream_options = OpenAIProtocol.StreamOptions(include_usage = true)
             )
 
+            currentResponses = responses
             var finishReasonLength = false
             var streamingText = ""
 
+            try {
             for (res in responses) {
+                if (stopRequested) break
                 if (!callBackend {
                     for (choice in res.choices) {
                         choice.delta.content?.let { content ->
@@ -964,6 +983,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 });
             }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Channel cancelled by requestStopGeneration to unblock a
+                // receive the engine never terminated — expected on stop.
+            } finally {
+                currentResponses = null
+            }
+
+            if (stopRequested) {
+                finalizeStopped(streamingText)
+                return
+            }
+
             if (streamingText.isNotEmpty()) {
                 historyMessages.add(ChatCompletionMessage(
                     role = OpenAIProtocol.ChatCompletionRole.assistant,
@@ -978,6 +1009,60 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
             onAssistantComplete(streamingText, stepCount)
         }
+
+        /**
+         * Wraps up a generation that the user stopped: keeps the partial text
+         * (if any) in both the UI and history, drops the empty placeholder
+         * otherwise, clears the flag and returns to Ready. Does NOT continue
+         * the shell tool loop.
+         */
+        private fun finalizeStopped(partialText: String) {
+            if (partialText.isNotEmpty()) {
+                val stoppedText = "$partialText [stopped]"
+                updateMessage(MessageRole.Assistant, stoppedText)
+                historyMessages.add(
+                    ChatCompletionMessage(
+                        role = OpenAIProtocol.ChatCompletionRole.assistant,
+                        content = stoppedText
+                    )
+                )
+                persistMessage(MessageRole.Assistant, stoppedText)
+            } else {
+                // Remove the empty assistant placeholder bubble.
+                if (messages.isNotEmpty() && messages.last().text.isEmpty() &&
+                    messages.last().role == MessageRole.Assistant
+                ) {
+                    messages.removeAt(messages.size - 1)
+                }
+                // Drop the trailing user/tool turn that got no answer.
+                if (historyMessages.isNotEmpty()) {
+                    historyMessages.removeAt(historyMessages.size - 1)
+                }
+            }
+            stopRequested = false
+            switchToReady()
+        }
+
+        /**
+         * User asked to stop. Cancels a command awaiting approval, or aborts
+         * in-flight generation (the streaming loop then ends via [stopRequested]).
+         */
+        fun requestStopGeneration() {
+            if (pendingCommand.value != null) {
+                pendingCommand.value = null
+                if (modelChatState.value == ModelChatState.Generating) switchToReady()
+                return
+            }
+            if (modelChatState.value != ModelChatState.Generating) return
+            stopRequested = true
+            executorService.submit { callBackend { engine.abort() } }
+            // Also cancel the channel directly, so the streaming loop unblocks
+            // even if the engine never sends a terminating chunk after abort().
+            currentResponses?.cancel()
+        }
+
+        fun isGenerating(): Boolean =
+            modelChatState.value == ModelChatState.Generating
 
         /**
          * After a completed assistant message: if shell tools are on and the

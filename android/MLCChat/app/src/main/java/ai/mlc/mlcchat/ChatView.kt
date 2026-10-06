@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
@@ -551,21 +552,37 @@ fun SendMessageView(chatState: AppViewModel.ChatState, activity: Activity) {
                 contentDescription = "select image",
             )
         }
-        IconButton(
-            onClick = {
-                localFocusManager.clearFocus()
-                chatState.requestGenerate(text, activity)
-                text = ""
-            },
-            modifier = Modifier
-                .aspectRatio(1f)
-                .weight(1f),
-            enabled = (text != "" && chatState.chatable())
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Send,
-                contentDescription = "send message",
-            )
+        if (chatState.isGenerating()) {
+            // While generating, the send button becomes a stop button.
+            IconButton(
+                onClick = { chatState.requestStopGeneration() },
+                modifier = Modifier
+                    .aspectRatio(1f)
+                    .weight(1f),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Stop,
+                    contentDescription = "stop generating",
+                    tint = MaterialTheme.colorScheme.error
+                )
+            }
+        } else {
+            IconButton(
+                onClick = {
+                    localFocusManager.clearFocus()
+                    chatState.requestGenerate(text, activity)
+                    text = ""
+                },
+                modifier = Modifier
+                    .aspectRatio(1f)
+                    .weight(1f),
+                enabled = (text != "" && chatState.chatable())
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Send,
+                    contentDescription = "send message",
+                )
+            }
         }
     }
 }
