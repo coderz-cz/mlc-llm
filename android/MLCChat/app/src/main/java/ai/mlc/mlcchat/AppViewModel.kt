@@ -63,6 +63,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         const val ModelConfigFilename = "mlc-chat-config.json"
         const val ParamsConfigFilename = "tensor-cache.json"
         const val ModelUrlSuffix = "resolve/main/"
+        const val PREF_AUTO_RUN = "auto_run"
+        const val PREF_WORKDIR = "workdir"
     }
 
     init {
@@ -551,6 +553,33 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // keeps counting toward ShellToolProtocol.MAX_STEPS.
         private var pendingStepCount = 0
 
+        // Persisted shell settings (SharedPreferences, survive app restarts).
+        // NB: use getApplication() here, not the outer `application` field —
+        // ChatState is constructed before that field is initialized, so the
+        // field is still null during this initializer.
+        private val shellPrefs =
+            getApplication<Application>()
+                .getSharedPreferences("mlcchat_shell", Context.MODE_PRIVATE)
+        // When on, commands run WITHOUT the per-command confirmation dialog.
+        // Off by default — this skips the safety gate on real device commands.
+        val shellAutoRun = mutableStateOf(shellPrefs.getBoolean(PREF_AUTO_RUN, false))
+        // Directory commands run in (passed to Termux as RUN_COMMAND_WORKDIR).
+        val shellWorkdir = mutableStateOf(
+            shellPrefs.getString(PREF_WORKDIR, TermuxShell.DEFAULT_WORKDIR)
+                ?: TermuxShell.DEFAULT_WORKDIR
+        )
+
+        fun setShellAutoRun(enabled: Boolean) {
+            shellAutoRun.value = enabled
+            shellPrefs.edit().putBoolean(PREF_AUTO_RUN, enabled).apply()
+        }
+
+        fun setShellWorkdir(dir: String) {
+            val cleaned = dir.trim().ifEmpty { TermuxShell.DEFAULT_WORKDIR }
+            shellWorkdir.value = cleaned
+            shellPrefs.edit().putString(PREF_WORKDIR, cleaned).apply()
+        }
+
         // Must be called from a background thread (i.e. already inside an
         // executorService.submit block) since it hits the DB.
         private fun createSession(): ChatSessionEntity {
@@ -972,24 +1001,33 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         switchToReady()
                         return
                     }
-                    // Park the command for the confirmation dialog. Stay in
-                    // Generating so the composer stays disabled until the user
-                    // approves or declines.
-                    pendingStepCount = stepCount
-                    pendingCommand.value = command
+                    if (shellAutoRun.value) {
+                        // Auto-run mode: skip the confirmation dialog and run
+                        // the command straight away.
+                        runCommandAndContinue(command, stepCount)
+                    } else {
+                        // Park the command for the confirmation dialog. Stay in
+                        // Generating so the composer stays disabled until the
+                        // user approves or declines.
+                        pendingStepCount = stepCount
+                        pendingCommand.value = command
+                    }
                     return
                 }
             }
             switchToReady()
         }
 
-        /** User approved the parked command: run it in Termux and continue. */
-        fun approvePendingCommand() {
-            val command = pendingCommand.value ?: return
-            pendingCommand.value = null
-            val step = pendingStepCount
+        /**
+         * Runs [command] in Termux (in the configured working directory) and
+         * feeds the result back as the next turn, continuing the tool loop.
+         * Shared by both the approval path and auto-run.
+         */
+        private fun runCommandAndContinue(command: String, step: Int) {
             viewModelScope.launch {
-                val result = TermuxShell.run(application, command)
+                val result = TermuxShell.run(
+                    application, command, workdir = shellWorkdir.value
+                )
                 val feedback = ShellToolProtocol.formatResultForModel(result)
                 appendMessage(MessageRole.User, feedback)
                 persistMessage(MessageRole.User, feedback)
@@ -1002,6 +1040,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 streamAssistant(stepCount = step + 1)
             }
+        }
+
+        /** User approved the parked command: run it in Termux and continue. */
+        fun approvePendingCommand() {
+            val command = pendingCommand.value ?: return
+            pendingCommand.value = null
+            runCommandAndContinue(command, pendingStepCount)
         }
 
         /** User declined the parked command: note it and end the turn. */

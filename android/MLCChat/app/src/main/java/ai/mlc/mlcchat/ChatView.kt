@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -78,6 +79,13 @@ fun ChatView(
     val localFocusManager = LocalFocusManager.current
     (activity as MainActivity).chatState = chatState
     var showSessionList by rememberSaveable { mutableStateOf(false) }
+    var showShellSettings by rememberSaveable { mutableStateOf(false) }
+    if (showShellSettings) {
+        ShellSettingsDialog(
+            chatState = chatState,
+            onDismiss = { showShellSettings = false }
+        )
+    }
     if (showSessionList) {
         ChatSessionListDialog(
             chatState = chatState,
@@ -129,6 +137,18 @@ fun ChatView(
                         else
                             MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.4f)
                     )
+                }
+                if (shellOn) {
+                    IconButton(
+                        onClick = { showShellSettings = true },
+                        enabled = chatState.interruptable()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Tune,
+                            contentDescription = "shell settings",
+                            tint = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
                 }
                 IconButton(
                     onClick = {
@@ -310,6 +330,62 @@ fun ShellCommandConfirmDialog(
         },
         dismissButton = {
             TextButton(onClick = onDecline) { Text("Decline") }
+        }
+    )
+}
+
+@ExperimentalMaterial3Api
+@Composable
+fun ShellSettingsDialog(chatState: AppViewModel.ChatState, onDismiss: () -> Unit) {
+    var workdir by rememberSaveable { mutableStateOf(chatState.shellWorkdir.value) }
+    val autoRun = chatState.shellAutoRun.value
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Shell settings") },
+        text = {
+            Column {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Auto-run commands")
+                        Text(
+                            text = "Skip the confirmation dialog. Commands run " +
+                                "immediately — use only when you trust the model.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Switch(
+                        checked = autoRun,
+                        onCheckedChange = { chatState.setShellAutoRun(it) }
+                    )
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("Working directory")
+                OutlinedTextField(
+                    value = workdir,
+                    onValueChange = { workdir = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    text = "Directory commands run in inside Termux.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                chatState.setShellWorkdir(workdir)
+                onDismiss()
+            }) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
 }

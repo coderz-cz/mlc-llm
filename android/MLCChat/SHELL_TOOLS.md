@@ -42,6 +42,19 @@ sandbox — never inside the MLCChat process.
 - Every command requires explicit approval. Tapping outside the dialog counts
   as Decline — nothing runs by accident.
 
+### Shell settings
+
+When shell tools are on, a **settings (sliders) icon** appears in the top bar.
+It opens a dialog with two persisted options:
+
+- **Auto-run commands** — skips the confirmation dialog and runs commands
+  immediately. Off by default; the safety gate exists for a reason, so only
+  turn this on when you trust what the model is doing.
+- **Working directory** — the directory commands run in inside Termux
+  (defaults to Termux's home, `/data/data/com.termux/files/home`).
+
+Both settings are saved in SharedPreferences and survive app restarts.
+
 ## Implementation
 
 - `tools/TermuxShell.kt` — the `com.termux.RUN_COMMAND` intent bridge; sends a

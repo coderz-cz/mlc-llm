@@ -45,7 +45,7 @@ object TermuxShell {
 
     // Default login shell inside Termux.
     private const val BASH_PATH = "/data/data/com.termux/files/usr/bin/bash"
-    private const val DEFAULT_WORKDIR = "/data/data/com.termux/files/home"
+    const val DEFAULT_WORKDIR = "/data/data/com.termux/files/home"
 
     private const val RESULT_ACTION_PREFIX = "ai.mlc.mlcchat.TERMUX_RESULT_"
     private val resultSeq = AtomicInteger(0)
